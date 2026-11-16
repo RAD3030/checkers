@@ -2,14 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Peer Checkers</title>
-  <script src="https://unpkg.com"></script>
+  <title>Custom Room Checkers</title>
+  <script src="https://cloudflare.com"></script>
   <style>
     body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #1e1e1e; color: white; margin-top: 20px; }
-    #controls { margin-bottom: 15px; display: flex; gap: 10px; align-items: center; }
+    #controls { margin-bottom: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
     input, button { padding: 8px 12px; font-size: 14px; border-radius: 4px; border: none; }
+    input { width: 150px; }
     button { background: #4CAF50; color: white; cursor: pointer; font-weight: bold; }
     button:hover { background: #45a049; }
+    .join-btn { background: #2196F3; }
+    .join-btn:hover { background: #0b7dda; }
+    .reset-btn { background: #555; }
+    .reset-btn:hover { background: #444; }
     #board { display: grid; grid-template-columns: repeat(8, 55px); grid-template-rows: repeat(8, 55px); border: 4px solid #444; }
     .sq { width: 55px; height: 55px; display: flex; justify-content: center; align-items: center; }
     .light { background: #eeeed2; }
@@ -18,19 +23,19 @@
     .piece { width: 42px; height: 42px; border-radius: 50%; cursor: pointer; display: flex; justify-content: center; align-items: center; font-weight: bold; font-size: 18px; box-shadow: 0 3px 5px rgba(0,0,0,0.5); }
     .red { background: #d93829; color: gold; }
     .black { background: #222; color: gold; border: 2px solid #555; }
-    #status { margin-top: 12px; font-size: 16px; color: #ddd; }
+    #status { margin-top: 12px; font-size: 16px; color: #ddd; text-align: center; }
   </style>
 </head>
 <body>
   <h2>Multiplayer Checkers</h2>
   <div id="controls">
-    <span>Your ID: <b id="my-id">Connecting...</b></span>
-    <input type="text" id="peer-id" placeholder="Friend's ID">
-    <button onclick="connectToFriend()">Join Game</button>
-    <button onclick="resetGame()" style="background:#555;">Reset Board</button>
+    <input type="text" id="room-code" placeholder="Type Room Code (e.g. 555)">
+    <button onclick="hostGame()">Host Game (Red)</button>
+    <button class="join-btn" onclick="joinGame()">Join Game (Black)</button>
+    <button class="reset-btn" onclick="resetGame()">Reset</button>
   </div>
   <div id="board"></div>
-  <div id="status">Share Your ID with your friend, or enter theirs to join!</div>
+  <div id="status">Type a secret room code above: one player clicks Host, the other clicks Join!</div>
 
   <script>
     const boardEl = document.getElementById('board');
@@ -39,27 +44,66 @@
     let selected = null;
     let turn = 'red';
     let myColor = 'red';
+    let peer = null;
     let conn = null;
 
-    // Generate short 4-letter Room ID
-    const shortId = 'chk-' + Math.random().toString(36).substring(2, 6);
-    const peer = new Peer(shortId);
+    function getCleanCode() {
+      const raw = document.getElementById('room-code').value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!raw) {
+        statusEl.innerText = "Please type a room code first!";
+        return null;
+      }
+      return 'school-chk-' + raw;
+    }
 
-    peer.on('open', id => document.getElementById('my-id').innerText = id);
-    peer.on('connection', connection => {
-      conn = connection;
+    function hostGame() {
+      const roomId = getCleanCode();
+      if (!roomId) return;
+      if (peer) peer.destroy();
+
+      statusEl.innerText = "Creating room...";
+      peer = new Peer(roomId);
       myColor = 'red';
-      setupConn();
-      statusEl.innerText = "Friend joined! You are RED (Your turn).";
-    });
 
-    function connectToFriend() {
-      const friendId = document.getElementById('peer-id').value.trim();
-      if (!friendId) return;
-      conn = peer.connect(friendId);
+      peer.on('open', () => {
+        statusEl.innerText = `Room Ready! Tell your friend to enter "${document.getElementById('room-code').value.trim()}" and click Join.`;
+      });
+
+      peer.on('connection', connection => {
+        conn = connection;
+        setupConn();
+        statusEl.innerText = "Friend connected! You are RED (Your turn).";
+      });
+
+      peer.on('error', err => {
+        if (err.type === 'unavailable-id') {
+          statusEl.innerText = "That room code is already taken! Try a different number or word.";
+        } else {
+          statusEl.innerText = "Connection blocked by school Wi-Fi (" + err.type + "). Pass-and-play still works!";
+        }
+      });
+    }
+
+    function joinGame() {
+      const roomId = getCleanCode();
+      if (!roomId) return;
+      if (peer) peer.destroy();
+
+      statusEl.innerText = "Joining room...";
+      peer = new Peer();
       myColor = 'black';
-      setupConn();
-      statusEl.innerText = "Connected! You are BLACK (Red goes first).";
+
+      peer.on('open', () => {
+        conn = peer.connect(roomId);
+        setupConn();
+        conn.on('open', () => {
+          statusEl.innerText = "Connected! You are BLACK (Red goes first).";
+        });
+      });
+
+      peer.on('error', err => {
+        statusEl.innerText = "Could not find room or blocked by Wi-Fi (" + err.type + ").";
+      });
     }
 
     function setupConn() {
@@ -132,12 +176,9 @@
         const piece = board[selected.r][selected.c];
         const forward = piece.color === 'red' ? -1 : 1;
 
-        // Normal 1-step diagonal move
         if (Math.abs(dc) === 1 && (dr === forward || (piece.king && Math.abs(dr) === 1))) {
           movePiece(selected.r, selected.c, r, c);
-        }
-        // 2-step jump capture
-        else if (Math.abs(dc) === 2 && (dr === forward * 2 || (piece.king && Math.abs(dr) === 2))) {
+        } else if (Math.abs(dc) === 2 && (dr === forward * 2 || (piece.king && Math.abs(dr) === 2))) {
           const midR = selected.r + dr / 2;
           const midC = selected.c + dc / 2;
           const jumped = board[midR][midC];
